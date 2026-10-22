@@ -1104,7 +1104,7 @@ mod tests {
         assert_ne!(Rng::from_seed(0).unit(), 0.0, "a zero seed is not stuck");
     }
 
-    /// An explicit seed fixes the sampler's complete draw stream: repeating
+    /// An explicit seed fixes the sampler's whole draw stream: repeating
     /// it produces the same tokens, while changing only the seed can vary it.
     #[test]
     fn an_explicit_seed_repeats_the_sampling_stream() {
