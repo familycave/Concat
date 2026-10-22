@@ -400,6 +400,32 @@ impl Engine {
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(f32),
     ) -> Result<Vec<f32>, ReadError> {
+        let mut rng = Rng::seeded();
+        self.speak_with_rng(text, reference, cancel, progress, &mut rng)
+    }
+
+    /// Reads exactly as [`Engine::speak`], but from an explicit seed so
+    /// the same voice, text, model and sampling settings can be repeated.
+    pub fn speak_seeded(
+        &self,
+        text: &str,
+        reference: &[f32],
+        seed: u64,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(f32),
+    ) -> Result<Vec<f32>, ReadError> {
+        let mut rng = Rng::from_seed(seed);
+        self.speak_with_rng(text, reference, cancel, progress, &mut rng)
+    }
+
+    fn speak_with_rng(
+        &self,
+        text: &str,
+        reference: &[f32],
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(f32),
+        rng: &mut Rng,
+    ) -> Result<Vec<f32>, ReadError> {
         let started = std::time::Instant::now();
         log::info!(
             "chatterbox: reading {} characters in the voice of a {:.1}s recording",
@@ -433,7 +459,7 @@ impl Engine {
                 chunk.chars().take(80).collect::<String>()
             );
             let writing = std::time::Instant::now();
-            let tokens = self.write(chunk, &voice, cancel, &mut |count| {
+            let tokens = self.write(chunk, &voice, cancel, rng, &mut |count| {
                 progress(((written + count) as f32 / expected.max(1) as f32).min(0.95));
             })?;
             log::info!(
@@ -510,6 +536,7 @@ impl Engine {
         chunk: &str,
         voice: &Voice,
         cancel: &AtomicBool,
+        rng: &mut Rng,
         progress: &mut dyn FnMut(usize),
     ) -> Result<Vec<i64>, ReadError> {
         // With the post-processor's two `<|endoftext|>` on the end: they are
@@ -565,7 +592,6 @@ impl Engine {
 
         let mut cache: Vec<Option<ort::value::Value>> = (0..LAYERS * 2).map(|_| None).collect();
         let mut generated: Vec<i64> = vec![START_SPEECH_TOKEN];
-        let mut rng = Rng::seeded();
         // Cut off well past where this chunk should have finished, so a
         // read that has lost its way costs seconds and not the forty the
         // model would otherwise fill.
@@ -613,7 +639,7 @@ impl Engine {
                 TEMPERATURE,
                 TOP_K,
                 TOP_P,
-                &mut rng,
+                rng,
             );
             for layer in 0..LAYERS {
                 for (slot, kind) in ["key", "value"].iter().enumerate() {
@@ -1076,6 +1102,21 @@ mod tests {
         }
         assert!(distinct.len() > 900);
         assert_ne!(Rng::from_seed(0).unit(), 0.0, "a zero seed is not stuck");
+    }
+
+    /// An explicit seed fixes the sampler's whole draw stream: repeating
+    /// it produces the same tokens, while changing only the seed can vary it.
+    #[test]
+    fn an_explicit_seed_repeats_the_sampling_stream() {
+        let logits = [0.1, 5.0, 4.9, 4.8, -3.0];
+        let draw = |seed| {
+            let mut rng = Rng::from_seed(seed);
+            (0..64)
+                .map(|_| sample_token(&logits, &[], 1.2, 0.8, 1000, 0.95, &mut rng))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(draw(42), draw(42));
+        assert_ne!(draw(42), draw(43));
     }
 
     /// A recording is brought to the target loudness whether it came in
