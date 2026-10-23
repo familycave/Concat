@@ -1238,7 +1238,6 @@ mod tests {
     }
 }
 
-
 /// Opt-in, exact-engine ONNX inference evidence for QW01 E268.
 /// This is not the fast synthetic-logits unit test above: it runs hear() and
 /// write() on actual bundle weights and a real authorized speech reference.
@@ -1302,7 +1301,11 @@ mod qw01_exact_engine_seed_probe {
             };
             let first = generate();
             let second = generate();
-            assert!(!first.is_empty(), "line {} returned no speech tokens", line_index + 1);
+            assert!(
+                !first.is_empty(),
+                "line {} returned no speech tokens",
+                line_index + 1
+            );
             assert_eq!(
                 first, second,
                 "line {} produced different speech tokens with the same reference/text/seed",
