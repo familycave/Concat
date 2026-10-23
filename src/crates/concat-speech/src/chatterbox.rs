@@ -1237,3 +1237,84 @@ mod tests {
         assert_eq!(wav_bytes(&[], 8_000).len(), 44);
     }
 }
+
+
+/// Opt-in, exact-engine ONNX inference evidence for QW01 E268.
+/// This is not the fast synthetic-logits unit test above: it runs hear() and
+/// write() on actual bundle weights and a real authorized speech reference.
+#[cfg(test)]
+mod qw01_exact_engine_seed_probe {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires ~1.12 GB Chatterbox ONNX bundle and real authorized speech PCM"]
+    fn exact_engine_fixed_seed_speech_token_replay() {
+        let model_dir = std::env::var_os("QW01_CHATTERBOX_BUNDLE_DIR")
+            .expect("set QW01_CHATTERBOX_BUNDLE_DIR to the complete Chatterbox ONNX bundle");
+        let reference_path = std::env::var_os("QW01_REFERENCE_F32LE")
+            .expect("set QW01_REFERENCE_F32LE to real 24 kHz mono float32-le speech");
+
+        let reference_bytes = std::fs::read(reference_path)
+            .unwrap_or_else(|error| panic!("could not read reference PCM: {error}"));
+        assert!(
+            reference_bytes.len() % 4 == 0,
+            "reference must contain complete f32-le samples"
+        );
+        let reference: Vec<f32> = reference_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
+            .collect();
+        assert!(
+            reference.len() as f32 / SAMPLE_RATE as f32 >= MIN_REFERENCE_SECONDS,
+            "reference speech must last at least {MIN_REFERENCE_SECONDS} seconds"
+        );
+        assert!(
+            reference.iter().all(|sample| sample.is_finite() && sample.abs() <= 1.0),
+            "reference must be normalized, finite PCM speech"
+        );
+
+        let engine = Engine::load(std::path::Path::new(&model_dir), false)
+            .unwrap_or_else(|error| panic!("could not load exact Chatterbox model: {error}"));
+        let cancel = AtomicBool::new(false);
+        let texts = [
+            "Today we are testing whether the same voice and seed produce the same speech tokens.",
+            "This second sentence checks that the model stays repeatable when the words change.",
+            "Our third sample completes a small multi-line speech token repeatability trial.",
+        ];
+
+        for (line_index, line) in texts.into_iter().enumerate() {
+            let normalized = punc_norm(line);
+            assert_eq!(
+                chunks(&normalized).len(), 1,
+                "each trial line must use precisely one inference chunk"
+            );
+
+            // Repeat the full reference encoder as well as the autoregressive
+            // language model; do not reuse frozen logits or mock token streams.
+            let generate = || -> Vec<i64> {
+                let voice = engine
+                    .hear(&reference)
+                    .unwrap_or_else(|_| panic!("speech encoder inference failed"));
+                let mut rng = Rng::from_seed(42);
+                engine
+                    .write(&normalized, &voice, &cancel, &mut rng, &mut |_| {})
+                    .unwrap_or_else(|_| panic!("language model inference failed"))
+            };
+            let first = generate();
+            let second = generate();
+            assert!(!first.is_empty(), "line {} returned no speech tokens", line_index + 1);
+            assert_eq!(
+                first, second,
+                "line {} produced different speech tokens with the same reference/text/seed",
+                line_index + 1
+            );
+            println!(
+                "QW01 E268 MODEL-LEVEL PASS: line={} speech_tokens={} seed=42",
+                line_index + 1,
+                first.len()
+            );
+        }
+        // Separate gate remains: compare decoded, real-speech speaker identity
+        // against unseeded baselines before closing all of E268.
+    }
+}
